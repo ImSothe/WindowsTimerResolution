@@ -20,7 +20,7 @@ public readonly record struct TimerResolutionInfo(uint Coarsest, uint Finest, ui
 /// instead of relying on Windows cleaning up when the process dies.
 /// </para>
 /// </summary>
-public static class TimerResolution
+public static partial class TimerResolution
 {
     /// <summary>0.5 ms expressed in 100 ns units (the finest value most hardware supports).</summary>
     public const uint HalfMillisecond = 5_000;
@@ -72,6 +72,8 @@ public static class TimerResolution
 
             if (_requested != 0 && _requested != desired)
                 NtSetTimerResolution(_requested, false, out _);   // swap: drop the old request first
+
+            OptOutOfTimerThrottling();
 
             int status = NtSetTimerResolution(desired, true, out uint current);
             if (status != 0)

@@ -19,17 +19,44 @@ using (TimerResolution.Hold())                   // asks for 0.5 ms (or the hard
 }                                                // released here, deterministically
 ```
 
+## Auto-calibration: 0.5 ms is not always the best request
+
+```csharp
+var cal = TimerResolution.Calibrate();          // ~6 s: sweeps 0.500 .. 0.600 ms and measures Sleep(1) at each step
+Console.WriteLine($"best: {cal.BestMs} ms (mean Sleep(1) {cal.BestMeanMs:0.00} ms)");
+
+using (TimerResolution.Hold(cal.Best)) { /* latency-sensitive work */ }
+// or in one call:
+using var h = TimerResolution.HoldCalibrated(out var result);
+```
+
+Asking for exactly 0.5 ms makes `Sleep(1)` land on the *second* tick, so it overshoots by ~0.5 ms. A request a
+few hundredths of a millisecond coarser can line up better with the hardware tick. It is hardware dependent,
+so the library measures instead of guessing. Score = `|mean - 1 ms| + 0.5 * stddev`, so jitter counts against a
+candidate.
+
 ## Measured on my machine
 
-`samples/TimerDemo` times `Thread.Sleep(1)` (200 samples each):
+Windows 11 (build 26100), supported range 0.500–15.625 ms, 200 samples each, via `samples/TimerDemo`:
 
 | State | Mean `Sleep(1)` |
 |---|---|
-| Default timer | 15.74 ms |
-| While holding a 0.5 ms request | 1.51 ms |
-| After release | 15.73 ms |
+| Default timer | 15.58 ms |
+| Plain 0.5 ms request | 1.59 ms |
+| **Calibrated (0.530 ms picked on this run)** | **1.18 ms** |
+| After release | 15.59 ms |
 
-(Windows 11, supported range 0.500–15.625 ms. Your numbers will vary with hardware and power plan.)
+An A/B run of 4 alternating rounds x 150 samples gave **1.54 ms at 0.500 ms vs 1.16 ms at 0.515 ms** every
+time. The trade-off is slightly more jitter (stddev ~0.22 ms vs ~0.16 ms). Your numbers will differ with
+hardware, power plan and background load; run `Calibrate()` on an idle machine.
+
+### What I did *not* find
+
+Measured from a **different process**, the system clock really does drop to 0.500 ms while a helper holds the
+request, but another process's `Sleep(1)` stayed at ~15.5 ms. On this Windows 11 build a request only helps the
+process that made it, unless the machine opts in to the system-wide behaviour (`GlobalTimerResolutionRequests`
+registry value, which needs a reboot and which I have not measured). So a resident "timer holder" process is
+not a free speed-up for other programs. Call `Calibrate()`/`Hold()` inside the program that needs the timing.
 
 ## API
 
@@ -39,6 +66,9 @@ using (TimerResolution.Hold())                   // asks for 0.5 ms (or the hard
 | `Apply()` / `Apply(uint)` | Requests a resolution (clamped to hardware limits). Returns the value actually in effect. **Throws** if Windows rejects the request, rather than pretending it worked |
 | `Release()` | Withdraws this process's request. Idempotent, safe without a prior `Apply` |
 | `Hold()` | `IDisposable` scope that applies now and releases on dispose (double-dispose safe) |
+| `Calibrate()` / `HoldCalibrated()` | Sweeps candidate resolutions, measures `Sleep(1)` at each and returns / holds the best |
+| `ChooseBest()` / `Score()` | The pure scoring logic behind calibration (testable without Windows) |
+| `OptOutOfTimerThrottling()` | Asks Windows 11 not to ignore this process's timer request when it has no visible window (called automatically by `Apply`) |
 | `IsApplied` | Whether this process currently holds a request |
 
 ## Things worth knowing
@@ -65,9 +95,11 @@ Tests run on Windows; off Windows the calls are skipped and `Query()` returns `n
 
 ## Provenance
 
-Extracted and generalised from the timer module of a Windows tuning tool I build
-([Sothe Windows Optimizer](https://github.com/ImSothe/Sothe-Windows-Optimizer)). Written with
-AI-assisted development; the behaviour is covered by the tests above and the numbers in this
+Extracted and generalised from the timer module of Toji, a Windows tuning tool I build. I compared it against
+the community reference [valleyofdoom/TimerResolution](https://github.com/valleyofdoom/TimerResolution)
+(GPLv3): I read its approach and measured its binary, but copied no code, so this repo stays MIT. The idea of
+scanning slightly-coarser resolutions comes from that project's `micro-adjust-benchmark.ps1`; the in-process
+calibration, scoring and tests here are my own. Written with AI-assisted development; the numbers in this
 README come from running the sample.
 
 ## Licence
